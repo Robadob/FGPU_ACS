@@ -145,6 +145,14 @@
           <type>float</type>
           <name>z</name>
         </gpu:variable>
+        <gpu:variable>
+          <type>float</type>
+          <name>vel_x</name>
+        </gpu:variable>
+        <gpu:variable>
+          <type>float</type>
+          <name>vel_y</name>
+        </gpu:variable>
       </variables>
       <gpu:partitioningSpatial>
         <gpu:radius>5</gpu:radius>

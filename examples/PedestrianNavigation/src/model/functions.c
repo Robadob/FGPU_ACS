@@ -16,6 +16,7 @@
 
 #include <random>
 #include <ctime>
+#include "dynamic/header.h"
 #ifndef _FLAMEGPU_FUNCTIONS
 #define _FLAMEGPU_FUNCTIONS
 
@@ -26,8 +27,16 @@
 
 #define I_SCALER (SCALE_FACTOR*0.35f)
 #define MESSAGE_RADIUS d_message_pedestrian_location_radius
-#define MIN_DISTANCE 0.5f
+#define MIN_DISTANCE 0.0001f
+#define PED_RADIUS 0.25f //in metres
+#define PED_DIAMETER 0.5f //in metres
+#define AGENT_MASS 65.0f //Average mass of 65 kilograms
+#define INTERACTION_RANGE 4.0f //4metres
+#define INTERACTION_STRENGTH 100.0f
 
+#define COLLISION_WEIGHT	1000.0f //30.0f //10.0f//0.50f
+#define GOAL_WEIGHT			120.0f //0.20f
+#define MAX_SPEED 2.0f      //Metres per second
 //#define NUM_EXITS 7
 
 #define PI 3.1415f
@@ -49,7 +58,7 @@ __FLAME_GPU_FUNC__ int getNewExitLocation(RNG_rand48* rand48){
 __FLAME_GPU_FUNC__ int output_pedestrian_location(xmachine_memory_agent* agent, xmachine_message_pedestrian_location_list* pedestrian_location_messages){
 
     
-	add_pedestrian_location_message(pedestrian_location_messages, agent->x, agent->y, 0.0);
+	add_pedestrian_location_message(pedestrian_location_messages, agent->x, agent->y, 0.0, agent->vel_x, agent->vel_y);
   
     return 0;
 }
@@ -65,55 +74,80 @@ __FLAME_GPU_FUNC__ int avoid_pedestrians(xmachine_memory_agent* agent, xmachine_
 
 	glm::vec2 agent_pos = glm::vec2(agent->x, agent->y);
 	glm::vec2 agent_vel = glm::vec2(agent->vel_x, agent->vel_y);
-	glm::vec2 navigate_velocity = glm::vec2(0.0f, 0.0f);
-	glm::vec2 avoid_velocity = glm::vec2(0.0f, 0.0f);
+
+	glm::vec2 repulsive_force = glm::vec2(0, 0);
+	glm::vec2 physical_force = glm::vec2(0, 0);
+
 	xmachine_message_pedestrian_location* current_message = get_first_pedestrian_location_message(pedestrian_location_messages, partition_matrix, agent->x, agent->y, 0.0);
 	while (current_message)
 	{
 		glm::vec2 message_pos = glm::vec2(current_message->x, current_message->y);
 		float separation = length(agent_pos - message_pos);
-		if ((separation < MESSAGE_RADIUS)&&(separation>MIN_DISTANCE)){
+
+		//min distance used to check it is not the own agents message
+		if (separation>MIN_DISTANCE){
 			glm::vec2 to_agent = normalize(agent_pos - message_pos);
-			float ang = acosf(dot(agent_vel, to_agent));
-			float perception = 45.0f;
+			glm::vec2 other_vel = glm::vec2(current_message->vel_x, current_message->vel_y);
 
-			//STEER
-			if ((ang < RADIANS(perception)) || (ang > 3.14159265f-RADIANS(perception))){
-				glm::vec2 s_velocity = to_agent;
-				s_velocity *= powf(I_SCALER/separation, 1.25f)*STEER_WEIGHT;
-				navigate_velocity += s_velocity;
+
+
+			//Helbing's social forces implementation
+
+			//Repulsive force for each pedestrian
+			float A = INTERACTION_STRENGTH; //Interaction strength constant
+											//float B = 0.08; //Interaction range constant
+			float B = INTERACTION_RANGE; //Interaction range constant
+										 //float lambda = 0.4f; //Must be less then 1, set to 0 for isotropic (force equal in all directions)
+										 //float cosphi = dot( to_agent * -1.0f , agent_vel ); //Angle between heading direction and the location of the other ped
+
+			repulsive_force += to_agent * A * exp((PED_DIAMETER - separation) / B);// * ( lambda + ((1- lambda)* (1 + cosphi)/2) ); 
+
+																				   //Physical force, the force when pedestrians are touching each other
+			if (PED_DIAMETER >= separation)
+			{
+				//Body force
+				float k = 120000.0f; //Body force constant (large)
+
+				float thetaTerm = PED_DIAMETER - separation;
+				thetaTerm = thetaTerm >= 0 ? thetaTerm : 0; //Theta term must be zero or positive
+
+															//Sliding friction force
+				float kappa = 240000.0f; //sliding friction force constant (large)
+				glm::vec2 t = glm::vec2(-to_agent.y, to_agent.x); //Tangential direction
+				float deltav = dot(other_vel - agent_vel, t); //Tangential velocity difference
+				physical_force += (k * thetaTerm * to_agent) + (kappa * thetaTerm * t * deltav)*COLLISION_WEIGHT;
 			}
-
-			//AVOID
-			glm::vec2 a_velocity = to_agent;
-			a_velocity *= powf(I_SCALER/separation, 2.00f)*AVOID_WEIGHT;
-			avoid_velocity += a_velocity;						
-
 		}
 		 current_message = get_next_pedestrian_location_message(current_message, pedestrian_location_messages, partition_matrix);
 	}
 
-	//maximum velocity rule
-	glm::vec2 agent_steer = navigate_velocity + avoid_velocity;
-	//move
-	agent_steer.x += (agent->goal ? -1 : 1);
-	float current_speed = length(agent_vel) + 0.025f;//(powf(length(agent_vel), 1.75f)*0.01f)+0.025f;
+	//Combine forces
+	glm::vec2 agent_steer = repulsive_force + physical_force;
+	agent_steer.x += (agent->goal ? -1 : 1)*GOAL_WEIGHT;
+//Add a 3rd collision force with walls?
 
-	//apply more steer if speed is greater
-	agent_vel += current_speed*normalize(agent_steer);
-	float speed = length(agent_vel);
-	//limit speed
-	if (speed >= 2){
-		agent_vel = normalize(agent_vel)*2.0f;
+//Update velocity
+	glm::vec2 dv = (agent_steer / AGENT_MASS); //Velocity difference due to force
+	agent_vel *= 0.9f;
+	agent_vel += dv; //Add velocity difference to overall velocity
+	float speed = glm::length(agent_vel);
+
+	//Apply global speed limit (is it necessary?)
+	if (speed > MAX_SPEED)
+	{
+		agent_vel = glm::normalize(agent_vel) * MAX_SPEED;
+		speed = MAX_SPEED;
 	}
 
 	//update position
+
+	agent_vel = glm::mix(glm::vec2(agent->vel_x, agent->vel_y), agent_vel, 0.1f);
 	agent_pos += agent_vel*TIME_SCALER;
 	//printf("Pos(%.3f, %.3f) (%.3f, %.3f)\n", agent->x, agent->y, agent_pos.x, agent_pos.y);
 	//printf("Vel(%.3f, %.3f) (%.3f, %.3f)\n", agent->vel_x, agent->vel_y, agent_vel.x, agent_vel.y);
 
 	//animation
-	agent->animate += (agent->animate_dir * speed * 0.5f * TIME_SCALER);
+	agent->animate += (agent->animate_dir * speed * TIME_SCALER);
 	if (agent->animate >= 1)
 		agent->animate_dir = -1;
 	if (agent->animate <= 0)
@@ -183,7 +217,7 @@ __FLAME_GPU_INIT_FUNC__ void init_model()
 	set_STEER_WEIGHT(&sw);
 	float aw = 1.0f * 50000;
 	set_AVOID_WEIGHT(&aw);
-	float er = 0.1f;
+	float er = 0.08f;
 	set_EMMISION_RATE_EXIT1(&er);
 	set_EMMISION_RATE_EXIT2(&er);
 }
