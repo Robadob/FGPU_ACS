@@ -22,11 +22,13 @@
 #include "header.h"
 #include "CustomVisualisation.h"
 
-#define SCALE_FACTOR 0.03125
 
-#define I_SCALER (SCALE_FACTOR*0.35f)
+#define I_SCALER (0.35f)
 #define MESSAGE_RADIUS d_message_pedestrian_location_radius
 #define MIN_DISTANCE 0.5f
+#define MAX_SPEED 2.0f
+const int CORRIDOR_LENGTH = 100;
+const int CORRIDOR_WIDTH = 50;
 
 //#define NUM_EXITS 7
 
@@ -87,10 +89,35 @@ __FLAME_GPU_FUNC__ int avoid_pedestrians(xmachine_memory_agent* agent, xmachine_
 			//AVOID
 			glm::vec2 a_velocity = to_agent;
 			a_velocity *= powf(I_SCALER/separation, 2.00f)*AVOID_WEIGHT;
-			avoid_velocity += a_velocity;						
+			avoid_velocity += a_velocity;
 
+			if (separation <= 0.5f)
+				avoid_velocity *= 100;
 		}
 		 current_message = get_next_pedestrian_location_message(current_message, pedestrian_location_messages, partition_matrix);
+	}
+	//Collide with walls
+	if (agent_pos.y < 5)
+	{
+		//AVOID
+		glm::vec2 a_velocity = glm::vec2(0, agent_pos.y-0.5);
+		float seperation = glm::max(agent_pos.y - 0.5f,0.0f);
+		a_velocity *= powf(I_SCALER / seperation, 2.00f)*AVOID_WEIGHT;
+		avoid_velocity += a_velocity;
+
+		if (seperation <= 0.5f)
+			avoid_velocity *= 100;
+	}
+	else if (agent_pos.y > CORRIDOR_WIDTH - 5)
+	{
+		//AVOID
+		glm::vec2 a_velocity = glm::vec2(0, agent_pos.y - 49.5f);
+		float seperation = glm::max(49.5f - agent_pos.y, 0.0f);
+		a_velocity *= powf(I_SCALER / seperation, 2.00f)*AVOID_WEIGHT;
+		avoid_velocity += a_velocity;
+
+		if (seperation <= 0.5f)
+			avoid_velocity *= 100;
 	}
 
 	//maximum velocity rule
@@ -100,11 +127,11 @@ __FLAME_GPU_FUNC__ int avoid_pedestrians(xmachine_memory_agent* agent, xmachine_
 	float current_speed = length(agent_vel) + 0.025f;//(powf(length(agent_vel), 1.75f)*0.01f)+0.025f;
 
 	//apply more steer if speed is greater
-	agent_vel += current_speed*normalize(agent_steer);
+	agent_vel = mix(agent_vel, MAX_SPEED*normalize(agent_steer), 0.1f);
 	float speed = length(agent_vel);
 	//limit speed
-	if (speed >= 2){
-		agent_vel = normalize(agent_vel)*2.0f;
+	if (speed >= MAX_SPEED){
+		agent_vel = normalize(agent_vel)*MAX_SPEED;
 	}
 
 	//update position
@@ -113,7 +140,7 @@ __FLAME_GPU_FUNC__ int avoid_pedestrians(xmachine_memory_agent* agent, xmachine_
 	//printf("Vel(%.3f, %.3f) (%.3f, %.3f)\n", agent->vel_x, agent->vel_y, agent_vel.x, agent_vel.y);
 
 	//animation
-	agent->animate += (agent->animate_dir * speed * 0.5f * TIME_SCALER);
+	agent->animate += (agent->animate_dir * speed *0.5 * TIME_SCALER);
 	if (agent->animate >= 1)
 		agent->animate_dir = -1;
 	if (agent->animate <= 0)
@@ -165,8 +192,6 @@ std::uniform_int_distribution<> int_rng(0, 1);
 std::uniform_real_distribution<> flt_rng(0,1);
 std::normal_distribution<> nrml_rng( 1,0.2 );
 xmachine_memory_agent * h_agent = nullptr;
-const int CORRIDOR_LENGTH = 100;
-const int CORRIDOR_WIDTH = 50;
 __FLAME_GPU_INIT_FUNC__ void init_model()
 {
 	// Allocate a single agent struct on the host.
@@ -179,11 +204,11 @@ __FLAME_GPU_INIT_FUNC__ void init_model()
 	h_agent->steer_x = 0;
 	h_agent->steer_y = 0;
 
-	float sw = 0.1f*10000;
+	float sw = 1;
 	set_STEER_WEIGHT(&sw);
-	float aw = 1.0f * 50000;
+	float aw = 15;
 	set_AVOID_WEIGHT(&aw);
-	float er = 0.1f;
+	float er = 0.08f;
 	set_EMMISION_RATE_EXIT1(&er);
 	set_EMMISION_RATE_EXIT2(&er);
 }
@@ -215,7 +240,7 @@ __FLAME_GPU_STEP_FUNC__ void generate_pedestrians(){
 	//Init this agent
 	h_agent->goal = int_rng(gen);
 	h_agent->x = h_agent->goal ? CORRIDOR_LENGTH : 0;
-	h_agent->y = flt_rng(gen) * CORRIDOR_WIDTH;
+	h_agent->y = 1.0f +(flt_rng(gen) * CORRIDOR_WIDTH-2.0f);
 	float a = nrml_rng(gen);
 	assert(a > 0);
 	h_agent->vel_x = (h_agent->goal?-1:1)*a*1.5;

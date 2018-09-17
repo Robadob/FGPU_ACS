@@ -58,7 +58,7 @@ static const char pedestrian_vshader_source[] =
 
 	"   //blend keyframes															\n"
 	"	//data1.z = 0.5;															\n"
-	"   vec3 lerp_position = mix(gl_Vertex.xyz, position_r, data1.z)*500;				\n"
+	"   vec3 lerp_position = mix(gl_Vertex.xyz, position_r, data1.z)*250;				\n"
 
 	"	//calculate rotation angle componants										\n"
 	"	vec2 velocity = data2.xy;													\n"
